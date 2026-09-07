@@ -3,6 +3,7 @@ import sys
 import webbrowser
 import joblib
 import streamlit as st
+import os
 
 
 # ============================================================
@@ -13,6 +14,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ============================================================
+# DEPLOYMENT ENVIRONMENT
+# ============================================================
+
+# VMware/Kali integration works only when this application
+# is running locally on the Windows computer hosting VMware.
+
+LOCAL_WINDOWS_MODE = os.name == "nt"
+
+if LOCAL_WINDOWS_MODE:
+    DEPLOYMENT_MODE = "LOCAL WINDOWS"
+else:
+    DEPLOYMENT_MODE = "STREAMLIT CLOUD / SERVER"
 
 
 # ============================================================
@@ -66,24 +82,95 @@ except ImportError:
 # KALI VM IMPORTS
 # ============================================================
 
-try:
+# IMPORTANT:
+# The Kali VM is a LOCAL VMware guest.
+#
+# When running locally on Windows:
+#     Streamlit -> Windows -> VMware -> Kali -> Chrome
+#
+# When running on Streamlit Cloud:
+#     Streamlit Cloud -> X
+#
+# Streamlit Cloud cannot directly access your local
+# Kali VM at 192.168.29.129.
 
-    from app.vm_launcher import (
-        vm_available,
-        chrome_available,
-        get_vm_info,
-        get_vm_connection_status,
-        open_url_in_vm,
-        start_kali_vm,
-    )
+if LOCAL_WINDOWS_MODE:
 
-    VM_LAUNCHER_AVAILABLE = True
-    VM_IMPORT_ERROR = None
+    try:
 
-except Exception as e:
+        from app.vm_launcher import (
+            vm_available,
+            chrome_available,
+            get_vm_info,
+            get_vm_connection_status,
+            open_url_in_vm,
+            start_kali_vm,
+        )
+
+        VM_LAUNCHER_AVAILABLE = True
+        VM_IMPORT_ERROR = None
+
+    except Exception as e:
+
+        VM_LAUNCHER_AVAILABLE = False
+        VM_IMPORT_ERROR = str(e)
+
+        def vm_available():
+            return False
+
+        def chrome_available():
+            return False
+
+        def get_vm_info():
+
+            return {
+                "available": False,
+                "environment": DEPLOYMENT_MODE,
+                "message": VM_IMPORT_ERROR,
+            }
+
+        def get_vm_connection_status():
+
+            return {
+                "connected": False,
+                "message": VM_IMPORT_ERROR,
+            }
+
+        def open_url_in_vm(url):
+
+            return {
+                "success": False,
+                "url": url,
+                "message": (
+                    "VM launcher could not be imported: "
+                    + VM_IMPORT_ERROR
+                ),
+            }
+
+        def start_kali_vm():
+
+            return {
+                "success": False,
+                "started": False,
+                "message": (
+                    "VM launcher could not be imported: "
+                    + VM_IMPORT_ERROR
+                ),
+            }
+
+
+else:
+
+    # ========================================================
+    # STREAMLIT CLOUD / SERVER FALLBACK
+    # ========================================================
 
     VM_LAUNCHER_AVAILABLE = False
-    VM_IMPORT_ERROR = str(e)
+
+    VM_IMPORT_ERROR = (
+        "Local Kali Linux VMware integration is unavailable "
+        "when the application is running on Streamlit Cloud."
+    )
 
 
     def vm_available():
@@ -99,40 +186,82 @@ except Exception as e:
     def get_vm_info():
 
         return {
+
             "available": False,
-            "error": VM_IMPORT_ERROR,
+
+            "environment":
+                DEPLOYMENT_MODE,
+
+            "message":
+                (
+                    "The Kali Linux VM is running on the "
+                    "local Windows computer, not on "
+                    "Streamlit Cloud."
+                ),
+
+            "vm_host":
+                "192.168.29.129",
+
         }
 
 
     def get_vm_connection_status():
 
         return {
+
             "connected": False,
-            "message": VM_IMPORT_ERROR,
+
+            "message":
+                (
+                    "Streamlit Cloud cannot directly access "
+                    "the Kali Linux VM running on the local "
+                    "Windows/VMware computer."
+                ),
+
+            "environment":
+                DEPLOYMENT_MODE,
+
         }
 
 
     def open_url_in_vm(url):
 
         return {
+
             "success": False,
+
             "url": url,
-            "message": (
-                "VM launcher could not be imported: "
-                + VM_IMPORT_ERROR
-            ),
+
+            "message":
+                (
+                    "Kali Linux VM isolation is available "
+                    "only when Streamlit is running locally "
+                    "on the Windows computer hosting VMware."
+                ),
+
+            "environment":
+                DEPLOYMENT_MODE,
+
         }
 
 
     def start_kali_vm():
 
         return {
+
             "success": False,
+
             "started": False,
-            "message": (
-                "VM launcher could not be imported: "
-                + VM_IMPORT_ERROR
-            ),
+
+            "message":
+                (
+                    "Cannot start the local VMware Kali VM "
+                    "from Streamlit Cloud."
+                ),
+
+            "environment":
+                DEPLOYMENT_MODE,
+
         }
 
 
@@ -367,22 +496,15 @@ python -c "import joblib; m=joblib.load('models/url_risk_model.joblib'); print('
 # ============================================================
 
 if "analysis" not in st.session_state:
-
     st.session_state.analysis = None
 
-
 if "dynamic" not in st.session_state:
-
     st.session_state.dynamic = None
 
-
 if "analyzed_url" not in st.session_state:
-
     st.session_state.analyzed_url = ""
 
-
 if "input_url" not in st.session_state:
-
     st.session_state.input_url = ""
 
 
@@ -412,7 +534,6 @@ def clamp(
 def prepare_url(user_input):
 
     if user_input is None:
-
         return None
 
     value = str(
@@ -420,7 +541,6 @@ def prepare_url(user_input):
     ).strip()
 
     if not value:
-
         return None
 
     try:
@@ -635,10 +755,6 @@ def calculate_rule_score(
     reasons = []
 
 
-    # --------------------------------------------------------
-    # VERY HIGH RISK
-    # --------------------------------------------------------
-
     if features.get(
         "has_ip",
         0,
@@ -714,10 +830,6 @@ def calculate_rule_score(
         )
 
 
-    # --------------------------------------------------------
-    # MEDIUM RISK
-    # --------------------------------------------------------
-
     if features.get(
         "suspicious_keywords",
         0,
@@ -768,10 +880,6 @@ def calculate_rule_score(
         )
 
 
-    # --------------------------------------------------------
-    # HTTP
-    # --------------------------------------------------------
-
     if features.get(
         "is_http",
         0,
@@ -784,10 +892,6 @@ def calculate_rule_score(
             "of HTTPS."
         )
 
-
-    # --------------------------------------------------------
-    # STRUCTURAL RISK
-    # --------------------------------------------------------
 
     if features.get(
         "url_length",
@@ -1150,10 +1254,6 @@ def calculate_static_risk(
     normalized_url,
 ):
 
-    # --------------------------------------------------------
-    # ML
-    # --------------------------------------------------------
-
     ml_probability = (
         get_malicious_probability(
             features
@@ -1165,23 +1265,12 @@ def calculate_static_risk(
     )
 
 
-    # --------------------------------------------------------
-    # RULE ENGINE
-    # --------------------------------------------------------
-
     rule_score, reasons = (
         calculate_rule_score(
             features
         )
     )
 
-
-    # --------------------------------------------------------
-    # COMBINATION
-    #
-    # ML = 60%
-    # RULES = 40%
-    # --------------------------------------------------------
 
     final_score = (
         ml_score * 0.60
@@ -1194,10 +1283,6 @@ def calculate_static_risk(
     )
 
 
-    # --------------------------------------------------------
-    # LEGITIMATE DOMAIN
-    # --------------------------------------------------------
-
     (
         final_score,
         recognized_legitimate,
@@ -1208,10 +1293,6 @@ def calculate_static_risk(
         normalized_url,
     )
 
-
-    # --------------------------------------------------------
-    # FORCE VM
-    # --------------------------------------------------------
 
     (
         force_vm,
@@ -1236,10 +1317,6 @@ def calculate_static_risk(
                 force_reason,
             )
 
-
-    # --------------------------------------------------------
-    # CLASSIFICATION
-    # --------------------------------------------------------
 
     if final_score >= 75:
 
@@ -1319,10 +1396,6 @@ def calculate_dynamic_risk(
     )
 
 
-    # --------------------------------------------------------
-    # DOWNLOAD
-    # --------------------------------------------------------
-
     if dynamic.get(
         "downloads",
         0,
@@ -1334,10 +1407,6 @@ def calculate_dynamic_risk(
             "Page attempted a file download."
         )
 
-
-    # --------------------------------------------------------
-    # SUSPICIOUS JS
-    # --------------------------------------------------------
 
     if dynamic.get(
         "suspicious_js",
@@ -1351,10 +1420,6 @@ def calculate_dynamic_risk(
         )
 
 
-    # --------------------------------------------------------
-    # PASSWORD FORM
-    # --------------------------------------------------------
-
     if dynamic.get(
         "password_form",
         0,
@@ -1366,10 +1431,6 @@ def calculate_dynamic_risk(
             "Password/login form detected."
         )
 
-
-    # --------------------------------------------------------
-    # REDIRECTS
-    # --------------------------------------------------------
 
     redirects = dynamic.get(
         "redirect_count",
@@ -1385,18 +1446,10 @@ def calculate_dynamic_risk(
         )
 
 
-    # --------------------------------------------------------
-    # CAP
-    # --------------------------------------------------------
-
     final_score = clamp(
         final_score
     )
 
-
-    # --------------------------------------------------------
-    # DYNAMIC OVERRIDES
-    # --------------------------------------------------------
 
     if dynamic.get(
         "downloads",
@@ -1430,10 +1483,6 @@ def calculate_dynamic_risk(
             60,
         )
 
-
-    # --------------------------------------------------------
-    # FINAL CLASSIFICATION
-    # --------------------------------------------------------
 
     if final_score >= 75:
 
@@ -1523,57 +1572,116 @@ with st.sidebar:
     st.divider()
 
 
-    # --------------------------------------------------------
-    # VM STATUS
-    # --------------------------------------------------------
+    # ========================================================
+    # DEPLOYMENT STATUS
+    # ========================================================
 
-    vm_ok = vm_available()
-
-    chrome_ok = False
-
-    if vm_ok:
-
-        try:
-
-            chrome_ok = chrome_available()
-
-        except Exception:
-
-            chrome_ok = False
+    st.subheader(
+        "🚀 Deployment"
+    )
 
 
-    if vm_ok:
+    if LOCAL_WINDOWS_MODE:
 
         st.success(
-            "🖥️ Kali VM Connected"
+            "🪟 Local Windows Mode"
+        )
+
+        st.caption(
+            "This application is running on the "
+            "Windows computer that hosts VMware."
         )
 
     else:
 
-        st.error(
-            "❌ Kali VM Not Connected"
+        st.info(
+            "☁️ Streamlit Cloud Mode"
         )
 
-
-    # --------------------------------------------------------
-    # CHROME STATUS
-    # --------------------------------------------------------
-
-    if chrome_ok:
-
-        st.success(
-            "🌐 Chrome Available"
-        )
-
-    else:
-
-        st.error(
-            "❌ Chrome Not Available"
+        st.caption(
+            "This application is running on a "
+            "remote Streamlit server."
         )
 
 
     st.divider()
 
+
+    # ========================================================
+    # KALI VM STATUS
+    # ========================================================
+
+    if LOCAL_WINDOWS_MODE:
+
+        vm_ok = False
+        chrome_ok = False
+
+
+        try:
+
+            vm_ok = vm_available()
+
+        except Exception:
+
+            vm_ok = False
+
+
+        if vm_ok:
+
+            try:
+
+                chrome_ok = chrome_available()
+
+            except Exception:
+
+                chrome_ok = False
+
+
+        if vm_ok:
+
+            st.success(
+                "🖥️ Kali VM Connected"
+            )
+
+        else:
+
+            st.error(
+                "❌ Kali VM Not Connected"
+            )
+
+
+        if chrome_ok:
+
+            st.success(
+                "🌐 Chrome Available"
+            )
+
+        else:
+
+            st.error(
+                "❌ Chrome Not Available"
+            )
+
+
+    else:
+
+        st.warning(
+            "☁️ Local Kali VM unavailable"
+        )
+
+        st.info(
+            "Your Kali VM runs on your local "
+            "Windows computer. Streamlit Cloud "
+            "cannot directly access it."
+        )
+
+
+    st.divider()
+
+
+    # ========================================================
+    # ISOLATION POLICY
+    # ========================================================
 
     st.subheader(
         "Isolation Policy"
@@ -1593,11 +1701,21 @@ with st.sidebar:
     st.divider()
 
 
-    st.caption(
-        "Suspicious websites are opened inside "
-        "the isolated Kali Linux VM instead of "
-        "the normal Windows browser."
-    )
+    if LOCAL_WINDOWS_MODE:
+
+        st.caption(
+            "Suspicious websites are opened inside "
+            "the isolated Kali Linux VM instead of "
+            "the normal Windows browser."
+        )
+
+    else:
+
+        st.caption(
+            "AI detection works in Streamlit Cloud. "
+            "Run the application locally on Windows "
+            "to use VMware/Kali browser isolation."
+        )
 
 
 # ============================================================
@@ -1647,11 +1765,8 @@ with col2:
 if clear_button:
 
     st.session_state.analysis = None
-
     st.session_state.dynamic = None
-
     st.session_state.analyzed_url = ""
-
     st.session_state.input_url = ""
 
     st.rerun()
@@ -1692,10 +1807,7 @@ if analyze_button:
 
                 try:
 
-                    # ----------------------------------------
                     # STEP 1
-                    # ----------------------------------------
-
                     feature_dict = (
                         get_features(
                             normalized_url
@@ -1703,10 +1815,7 @@ if analyze_button:
                     )
 
 
-                    # ----------------------------------------
                     # STEP 2
-                    # ----------------------------------------
-
                     feature_vector = (
                         get_feature_vector(
                             feature_dict
@@ -1714,10 +1823,7 @@ if analyze_button:
                     )
 
 
-                    # ----------------------------------------
                     # STEP 3
-                    # ----------------------------------------
-
                     if len(
                         feature_vector
                     ) != 41:
@@ -1729,10 +1835,7 @@ if analyze_button:
                         )
 
 
-                    # ----------------------------------------
                     # STEP 4
-                    # ----------------------------------------
-
                     static_result = (
                         calculate_static_risk(
                             feature_dict,
@@ -1741,10 +1844,7 @@ if analyze_button:
                     )
 
 
-                    # ----------------------------------------
                     # SAVE RESULT
-                    # ----------------------------------------
-
                     st.session_state.analysis = {
 
                         "original_url":
@@ -1822,7 +1922,8 @@ if st.session_state.analysis:
         is not None
         and
         st.session_state.analyzed_url
-        == analyzed_url
+        ==
+        analyzed_url
     ):
 
         final_result = (
@@ -1852,7 +1953,8 @@ if st.session_state.analysis:
 
     if (
         original_url
-        != analyzed_url
+        !=
+        analyzed_url
     ):
 
         st.write(
@@ -2186,279 +2288,328 @@ if st.session_state.analysis:
     if score >= 25:
 
         st.warning(
-            "🔒 Unsafe website detected. "
-            "This website will ONLY be opened inside "
-            "Google Chrome in the Kali Linux VMware guest."
+            "🔒 Unsafe website detected."
         )
 
 
-        if st.button(
-            "🖥️ Open Unsafe Website in Kali VM Chrome",
-            type="primary",
-            use_container_width=True,
-            key="open_unsafe_vm_button",
-        ):
+        # ====================================================
+        # STREAMLIT CLOUD
+        # ====================================================
 
-            result = None
+        if not LOCAL_WINDOWS_MODE:
+
+            st.info(
+                "☁️ Streamlit Cloud deployment detected."
+            )
+
+            st.error(
+                "🖥️ Kali Linux VM is not available "
+                "from Streamlit Cloud."
+            )
+
+            st.write(
+                "The AI detection and risk analysis "
+                "are working normally, but the Kali "
+                "Linux VM is running on your local "
+                "Windows computer."
+            )
+
+            st.warning(
+                "Run this application locally on Windows "
+                "to open the unsafe website inside "
+                "Kali Linux Chrome."
+            )
 
 
-            # ------------------------------------------------
-            # STEP 1 - CHECK / START VM
-            # ------------------------------------------------
+        # ====================================================
+        # LOCAL WINDOWS
+        # ====================================================
 
-            with st.spinner(
-                "Starting/checking Kali Linux VM..."
+        else:
+
+            st.info(
+                "The unsafe website will ONLY be opened "
+                "inside Google Chrome in the Kali Linux "
+                "VMware guest."
+            )
+
+
+            if st.button(
+                "🖥️ Open Unsafe Website in Kali VM Chrome",
+                type="primary",
+                use_container_width=True,
+                key="open_unsafe_vm_button",
             ):
 
-                if not vm_available():
-
-                    st.info(
-                        "🖥️ Kali VM is not running. "
-                        "Trying to start VMware/Kali Linux..."
-                    )
+                result = None
 
 
-                    vm_start_result = (
-                        start_kali_vm()
-                    )
+                # ============================================
+                # STEP 1 - CHECK / START VM
+                # ============================================
 
+                with st.spinner(
+                    "Starting/checking Kali Linux VM..."
+                ):
 
-                    if not vm_start_result.get(
-                        "success",
-                        False,
-                    ):
+                    if not vm_available():
 
-                        st.error(
-                            "❌ Could not start Kali Linux VM."
-                        )
-
-                        st.code(
-                            vm_start_result.get(
-                                "message",
-                                "Unknown VM startup error.",
-                            )
+                        st.info(
+                            "🖥️ Kali VM is not running. "
+                            "Trying to start VMware/Kali Linux..."
                         )
 
 
-                    else:
-
-                        st.success(
-                            "✅ Kali Linux VM startup command sent."
+                        vm_start_result = (
+                            start_kali_vm()
                         )
 
 
-                # ------------------------------------------------
-                # STEP 2 - CHECK VM CONNECTION
-                # ------------------------------------------------
-
-                if vm_available():
-
-                    connection = (
-                        get_vm_connection_status()
-                    )
-
-
-                    if not connection.get(
-                        "connected",
-                        False,
-                    ):
-
-                        st.warning(
-                            "⚠️ Kali VM was detected, "
-                            "but SSH connection is not available."
-                        )
-
-                        st.code(
-                            connection.get(
-                                "message",
-                                "Unknown SSH error.",
-                            )
-                        )
-
-
-                    else:
-
-                        # ----------------------------------------
-                        # STEP 3 - CHECK CHROME
-                        # ----------------------------------------
-
-                        if not chrome_available():
+                        if not vm_start_result.get(
+                            "success",
+                            False,
+                        ):
 
                             st.error(
-                                "❌ Google Chrome was not found "
-                                "inside Kali Linux."
+                                "❌ Could not start "
+                                "Kali Linux VM."
+                            )
+
+                            st.code(
+                                vm_start_result.get(
+                                    "message",
+                                    "Unknown VM startup error.",
+                                )
+                            )
+
+                        else:
+
+                            st.success(
+                                "✅ Kali Linux VM startup "
+                                "command sent."
+                            )
+
+
+                    # ========================================
+                    # STEP 2 - CHECK VM CONNECTION
+                    # ========================================
+
+                    if vm_available():
+
+                        connection = (
+                            get_vm_connection_status()
+                        )
+
+
+                        if not connection.get(
+                            "connected",
+                            False,
+                        ):
+
+                            st.warning(
+                                "⚠️ Kali VM was detected, "
+                                "but SSH connection is "
+                                "not available."
+                            )
+
+                            st.code(
+                                connection.get(
+                                    "message",
+                                    "Unknown SSH error.",
+                                )
                             )
 
 
                         else:
 
-                            # ------------------------------------
-                            # STEP 4 - OPEN URL IN KALI CHROME
-                            # ------------------------------------
+                            # =================================
+                            # STEP 3 - CHECK CHROME
+                            # =================================
 
-                            st.info(
-                                "🌐 Sending unsafe website to "
-                                "Google Chrome inside Kali Linux..."
-                            )
+                            if not chrome_available():
 
-
-                            result = (
-                                open_url_in_vm(
-                                    analyzed_url
+                                st.error(
+                                    "❌ Google Chrome was "
+                                    "not found inside "
+                                    "Kali Linux."
                                 )
-                            )
 
 
-            # ====================================================
-            # VM RESULT
-            # ====================================================
+                            else:
 
-            if result is not None:
+                                # =============================
+                                # STEP 4 - OPEN URL
+                                # =============================
 
-                if result.get(
-                    "success",
-                    False,
-                ):
-
-                    st.success(
-                        "✅ Unsafe website opened successfully "
-                        "inside Google Chrome in Kali Linux VM."
-                    )
+                                st.info(
+                                    "🌐 Sending unsafe website "
+                                    "to Google Chrome inside "
+                                    "Kali Linux..."
+                                )
 
 
-                    # --------------------------------------------
-                    # VMWARE FOREGROUND STATUS
-                    # --------------------------------------------
+                                result = (
+                                    open_url_in_vm(
+                                        analyzed_url
+                                    )
+                                )
 
-                    vmware_focused = result.get(
-                        "vmware_focused",
+
+                # =================================================
+                # VM RESULT
+                # =================================================
+
+                if result is not None:
+
+                    if result.get(
+                        "success",
                         False,
-                    )
-
-
-                    if vmware_focused:
+                    ):
 
                         st.success(
-                            "🖥️ VMware Workstation window "
-                            "was automatically brought "
-                            "to the foreground."
+                            "✅ Unsafe website opened "
+                            "successfully inside Google "
+                            "Chrome in Kali Linux VM."
                         )
+
+
+                        # =========================================
+                        # VMWARE FOREGROUND STATUS
+                        # =========================================
+
+                        vmware_focused = (
+                            result.get(
+                                "vmware_focused",
+                                False,
+                            )
+                        )
+
+
+                        if vmware_focused:
+
+                            st.success(
+                                "🖥️ VMware Workstation window "
+                                "was automatically brought "
+                                "to the foreground."
+                            )
+
+                        else:
+
+                            st.warning(
+                                "⚠️ Website opened in Kali Chrome, "
+                                "but VMware Workstation could not "
+                                "automatically be brought to the front."
+                            )
+
+
+                        # =========================================
+                        # SECURITY MESSAGE
+                        # =========================================
+
+                        st.info(
+                            "🔒 Windows normal browser "
+                            "was NOT used."
+                        )
+
+
+                        # =========================================
+                        # VM INFORMATION
+                        # =========================================
+
+                        st.write(
+                            f"**VM:** "
+                            f"`{result.get('vm_name', 'Kali Linux VM')}`"
+                        )
+
+
+                        st.write(
+                            f"**Browser:** "
+                            f"`{result.get('browser', 'Google Chrome')}`"
+                        )
+
+
+                        st.write(
+                            f"**URL:** "
+                            f"`{analyzed_url}`"
+                        )
+
+
+                        st.write(
+                            f"**SSH:** "
+                            f"`{result.get('ssh', 'N/A')}`"
+                        )
+
+
+                        # =========================================
+                        # VM OUTPUT
+                        # =========================================
+
+                        if result.get(
+                            "stdout"
+                        ):
+
+                            with st.expander(
+                                "🖥️ VM Launch Output"
+                            ):
+
+                                st.code(
+                                    result["stdout"]
+                                )
+
+
+                        if result.get(
+                            "stderr"
+                        ):
+
+                            with st.expander(
+                                "⚠️ VM Launch Messages"
+                            ):
+
+                                st.code(
+                                    result["stderr"]
+                                )
+
 
                     else:
 
-                        st.warning(
-                            "⚠️ Website opened in Kali Chrome, "
-                            "but VMware Workstation could not "
-                            "automatically be brought to the front."
+                        st.error(
+                            "❌ Failed to open website "
+                            "in Kali VM."
                         )
 
 
-                    # --------------------------------------------
-                    # SECURITY MESSAGE
-                    # --------------------------------------------
-
-                    st.info(
-                        "🔒 Windows normal browser was NOT used."
-                    )
-
-
-                    # --------------------------------------------
-                    # VM INFORMATION
-                    # --------------------------------------------
-
-                    st.write(
-                        f"**VM:** "
-                        f"`{result.get('vm_name', 'Kali Linux VM')}`"
-                    )
+                        st.code(
+                            result.get(
+                                "message",
+                                "Unknown VM error.",
+                            )
+                        )
 
 
-                    st.write(
-                        f"**Browser:** "
-                        f"`{result.get('browser', 'Google Chrome')}`"
-                    )
-
-
-                    st.write(
-                        f"**URL:** "
-                        f"`{analyzed_url}`"
-                    )
-
-
-                    st.write(
-                        f"**SSH:** "
-                        f"`{result.get('ssh', 'N/A')}`"
-                    )
-
-
-                    # --------------------------------------------
-                    # VM OUTPUT
-                    # --------------------------------------------
-
-                    if result.get(
-                        "stdout"
-                    ):
-
-                        with st.expander(
-                            "🖥️ VM Launch Output"
+                        if result.get(
+                            "stdout"
                         ):
+
+                            st.write(
+                                "**VM Output:**"
+                            )
 
                             st.code(
                                 result["stdout"]
                             )
 
 
-                    if result.get(
-                        "stderr"
-                    ):
-
-                        with st.expander(
-                            "⚠️ VM Launch Messages"
+                        if result.get(
+                            "stderr"
                         ):
+
+                            st.write(
+                                "**VM Error:**"
+                            )
 
                             st.code(
                                 result["stderr"]
                             )
-
-
-                else:
-
-                    st.error(
-                        "❌ Failed to open website in Kali VM."
-                    )
-
-
-                    st.code(
-                        result.get(
-                            "message",
-                            "Unknown VM error.",
-                        )
-                    )
-
-
-                    if result.get(
-                        "stdout"
-                    ):
-
-                        st.write(
-                            "**VM Output:**"
-                        )
-
-                        st.code(
-                            result["stdout"]
-                        )
-
-
-                    if result.get(
-                        "stderr"
-                    ):
-
-                        st.write(
-                            "**VM Error:**"
-                        )
-
-                        st.code(
-                            result["stderr"]
-                        )
 
 
     # ========================================================
@@ -2468,8 +2619,8 @@ if st.session_state.analysis:
     else:
 
         st.success(
-            "🟢 This website has a risk score below 25. "
-            "Normal browser access is allowed."
+            "🟢 This website has a risk score "
+            "below 25. Normal browser access is allowed."
         )
 
 
@@ -2491,14 +2642,14 @@ if st.session_state.analysis:
 
                     st.success(
                         "✅ Website opened in the "
-                        "normal Windows browser."
+                        "normal browser."
                     )
 
                 else:
 
                     st.warning(
-                        "⚠️ Windows browser launch "
-                        "command was sent, but Windows "
+                        "⚠️ Browser launch command "
+                        "was sent, but the browser "
                         "did not confirm the result."
                     )
 
@@ -2515,7 +2666,6 @@ if st.session_state.analysis:
     # ========================================================
 
     st.divider()
-
 
     st.subheader(
         "⚡ Dynamic Analysis"
@@ -2659,7 +2809,6 @@ else:
 # ============================================================
 
 st.divider()
-
 
 st.caption(
     "AI Browser Security • "
