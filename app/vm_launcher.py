@@ -868,15 +868,15 @@ def wait_for_vm(
 # ============================================================
 
 def open_url_in_vm(url: str):
-
     """
-    Open the supplied URL inside Google Chrome
-    running in the Kali Linux VMware guest.
+    Open a URL visibly inside Google Chrome/Chromium
+    running inside the Kali Linux VMware guest.
 
-    Windows Chrome / Edge / Brave are NOT used.
+    IMPORTANT:
+    This function does NOT open the URL in Windows Chrome,
+    Edge, Firefox, Brave, etc.
 
-    After Chrome starts, VMware Workstation is
-    automatically brought to the foreground.
+    It uses SSH to execute Chrome inside Kali Linux.
     """
 
     # --------------------------------------------------------
@@ -890,21 +890,16 @@ def open_url_in_vm(url: str):
     except Exception as exc:
 
         return {
-
             "success": False,
-
             "url": url,
-
             "message": str(exc),
         }
 
     # --------------------------------------------------------
-    # Check SSH connection
+    # Check Kali SSH connection
     # --------------------------------------------------------
 
-    status = (
-        get_vm_connection_status()
-    )
+    status = get_vm_connection_status()
 
     if not status.get(
         "connected",
@@ -912,143 +907,185 @@ def open_url_in_vm(url: str):
     ):
 
         return {
-
             "success": False,
-
             "url": url,
+            "message": (
+                "Cannot connect to Kali Linux VM.\n\n"
+                + status.get(
+                    "message",
+                    "Unknown SSH error.",
+                )
+            ),
+            "vm_ip": VM_HOST,
+            "vm_name": "Kali Linux VMware Guest",
+            "browser": "Google Chrome",
+            "ssh": VM_SSH_TARGET,
+        }
 
-            "message":
-                (
-                    "Cannot connect to Kali Linux VM.\n\n"
-                    +
-                    status.get(
-                        "message",
-                        "Unknown SSH error."
-                    )
-                ),
+    # --------------------------------------------------------
+    # Check browser
+    # --------------------------------------------------------
 
-            "vm_ip":
-                VM_HOST,
+    browser_check_command = r"""
+if command -v google-chrome >/dev/null 2>&1; then
+    echo "CHROME_BIN:$(command -v google-chrome)"
+elif command -v google-chrome-stable >/dev/null 2>&1; then
+    echo "CHROME_BIN:$(command -v google-chrome-stable)"
+elif command -v chromium >/dev/null 2>&1; then
+    echo "CHROME_BIN:$(command -v chromium)"
+elif command -v chromium-browser >/dev/null 2>&1; then
+    echo "CHROME_BIN:$(command -v chromium-browser)"
+else
+    echo "CHROME_NOT_FOUND"
+fi
+"""
 
-            "vm_name":
-                "Kali Linux VMware Guest",
+    code, stdout, stderr = run_ssh(
+        browser_check_command,
+        timeout=15,
+    )
 
-            "browser":
-                "Google Chrome",
+    if code != 0:
 
-            "ssh":
-                VM_SSH_TARGET,
+        return {
+            "success": False,
+            "url": url,
+            "message": (
+                stderr
+                or stdout
+                or "Could not check Chrome inside Kali."
+            ),
+            "vm_ip": VM_HOST,
+            "ssh": VM_SSH_TARGET,
+        }
+
+    chrome_bin = None
+
+    for line in stdout.splitlines():
+
+        if line.startswith(
+            "CHROME_BIN:"
+        ):
+
+            chrome_bin = line.split(
+                ":",
+                1,
+            )[1].strip()
+
+            break
+
+    if not chrome_bin:
+
+        return {
+            "success": False,
+            "url": url,
+            "message": (
+                "Google Chrome/Chromium was not found "
+                "inside the Kali Linux VM."
+            ),
+            "vm_ip": VM_HOST,
+            "ssh": VM_SSH_TARGET,
+            "stdout": stdout,
+            "stderr": stderr,
         }
 
     # --------------------------------------------------------
     # Safely quote URL
     # --------------------------------------------------------
 
-    safe_url = shlex.quote(url)
+    safe_url = shlex.quote(
+        url
+    )
 
-    # --------------------------------------------------------
-    # Build remote Linux command
-    # --------------------------------------------------------
+    safe_chrome = shlex.quote(
+        chrome_bin
+    )
 
-    remote_command = (
+    safe_home = shlex.quote(
+        f"/home/{VM_USER}"
+    )
 
-        "export HOME=/home/" + VM_USER + "; "
-
-        "export USER=" + VM_USER + "; "
-
-        "export LOGNAME=" + VM_USER + "; "
-
-        "export DISPLAY=" + VM_DISPLAY + "; "
-
-        "export XDG_RUNTIME_DIR=/run/user/"
-        + VM_UID + "; "
-
-        "if [ -S /run/user/"
-        + VM_UID
-        + "/bus ]; then "
-
-        "export DBUS_SESSION_BUS_ADDRESS="
-        "'unix:path=/run/user/"
-        + VM_UID
-        + "/bus'; "
-
-        "fi; "
-
-        "if [ -f "
-        + shlex.quote(VM_XAUTHORITY)
-        + " ]; then "
-
-        "export XAUTHORITY="
-        + shlex.quote(VM_XAUTHORITY)
-        + "; "
-
-        "fi; "
-
-        "mkdir -p /tmp/ai_browser_security; "
-
-        "mkdir -p "
-        "/tmp/ai_browser_security/chrome-profile; "
-
-        "CHROME_BIN=$(command -v google-chrome || "
-        "command -v google-chrome-stable || "
-        "command -v chromium || "
-        "command -v chromium-browser); "
-
-        "if [ -z \"$CHROME_BIN\" ]; then "
-
-        "echo 'ERROR: Google Chrome/Chromium not found.'; "
-
-        "exit 20; "
-
-        "fi; "
-
-        "nohup \"$CHROME_BIN\" "
-
-        "--user-data-dir="
-        "/tmp/ai_browser_security/chrome-profile "
-
-        "--new-window "
-
-        "--no-first-run "
-
-        "--no-default-browser-check "
-
-        "--disable-session-crashed-bubble "
-
-        "--disable-features=Translate "
-
-        "--noerrdialogs "
-
-        "--disable-infobars "
-
-        + safe_url +
-
-        " >/tmp/ai_browser_security/chrome.log "
-
-        "2>&1 </dev/null & "
-
-        "sleep 4; "
-
-        "if pgrep -f "
-        "'/tmp/ai_browser_security/chrome-profile' "
-        "> /dev/null 2>&1; then "
-
-        "echo VM_CHROME_STARTED; "
-
-        "else "
-
-        "echo VM_CHROME_START_UNKNOWN; "
-
-        "fi"
+    safe_xauthority = shlex.quote(
+        VM_XAUTHORITY
     )
 
     # --------------------------------------------------------
-    # Execute SSH command from Windows
+    # Remote GUI environment
     # --------------------------------------------------------
 
-    command = (
-        _vm_ssh_base_command()
-    )
+    remote_command = f"""
+export HOME={safe_home};
+export USER={shlex.quote(VM_USER)};
+export LOGNAME={shlex.quote(VM_USER)};
+export DISPLAY={shlex.quote(VM_DISPLAY)};
+export XDG_RUNTIME_DIR={shlex.quote(f"/run/user/{VM_UID}")};
+
+if [ -S /run/user/{VM_UID}/bus ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/{VM_UID}/bus";
+fi;
+
+if [ -f {safe_xauthority} ]; then
+    export XAUTHORITY={safe_xauthority};
+fi;
+
+mkdir -p /tmp/ai_browser_security;
+mkdir -p /tmp/ai_browser_security/visible-profile;
+
+# ----------------------------------------------------------
+# Check X display
+# ----------------------------------------------------------
+
+if ! command -v xdpyinfo >/dev/null 2>&1; then
+    echo "DISPLAY_CHECK_SKIPPED";
+else
+    if xdpyinfo >/dev/null 2>&1; then
+        echo "DISPLAY_OK";
+    else
+        echo "DISPLAY_NOT_AVAILABLE";
+    fi;
+fi;
+
+# ----------------------------------------------------------
+# Launch visible Chrome in Kali
+# ----------------------------------------------------------
+
+nohup {safe_chrome} \
+    --user-data-dir=/tmp/ai_browser_security/visible-profile \
+    --new-window \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-session-crashed-bubble \
+    --disable-features=Translate \
+    --noerrdialogs \
+    --disable-infobars \
+    {safe_url} \
+    >/tmp/ai_browser_security/visible_chrome.log \
+    2>&1 </dev/null &
+
+CHROME_PID=$!
+
+echo "CHROME_PID:$CHROME_PID";
+
+sleep 3;
+
+if kill -0 "$CHROME_PID" >/dev/null 2>&1; then
+    echo "VM_CHROME_STARTED";
+else
+    echo "VM_CHROME_PROCESS_EXITED";
+fi;
+
+echo "CHROME_LOG_BEGIN";
+
+tail -50 /tmp/ai_browser_security/visible_chrome.log 2>/dev/null || true;
+
+echo "CHROME_LOG_END";
+"""
+
+    # --------------------------------------------------------
+    # Execute command through SSH
+    # --------------------------------------------------------
+
+    command = _vm_ssh_base_command()
 
     command.append(
         remote_command
@@ -1057,15 +1094,10 @@ def open_url_in_vm(url: str):
     try:
 
         result = subprocess.run(
-
             command,
-
             capture_output=True,
-
             text=True,
-
-            timeout=30,
-
+            timeout=35,
             creationflags=CREATE_NO_WINDOW,
         )
 
@@ -1084,52 +1116,34 @@ def open_url_in_vm(url: str):
         if result.returncode != 0:
 
             return {
-
                 "success": False,
-
                 "url": url,
-
-                "message":
-                    (
-                        stderr
-                        or stdout
-                        or
-                        "Failed to execute Chrome command "
-                        "in Kali VM."
-                    ),
-
-                "vm_ip":
-                    VM_HOST,
-
-                "vm_name":
-                    "Kali Linux VMware Guest",
-
-                "browser":
-                    "Google Chrome",
-
-                "ssh":
-                    VM_SSH_TARGET,
-
-                "stdout":
-                    stdout,
-
-                "stderr":
-                    stderr,
+                "message": (
+                    stderr
+                    or stdout
+                    or (
+                        "Failed to execute Chrome "
+                        "inside Kali Linux."
+                    )
+                ),
+                "vm_ip": VM_HOST,
+                "vm_name": "Kali Linux VMware Guest",
+                "browser": "Google Chrome",
+                "ssh": VM_SSH_TARGET,
+                "stdout": stdout,
+                "stderr": stderr,
             }
 
         # ----------------------------------------------------
-        # Chrome confirmed
+        # Chrome successfully launched
         # ----------------------------------------------------
 
         if "VM_CHROME_STARTED" in stdout:
 
-            # Give VMware/Chrome a moment to update
-            # the guest display.
-
+            # Give Kali display a moment to update.
             time.sleep(1)
 
-            # Bring VMware Workstation to foreground.
-
+            # Bring VMware to foreground.
             vmware_focused = (
                 wait_and_bring_vmware_to_front(
                     attempts=12,
@@ -1138,142 +1152,107 @@ def open_url_in_vm(url: str):
             )
 
             return {
-
                 "success": True,
-
                 "url": url,
-
-                "message":
-                    (
-                        "Website successfully opened inside "
-                        "Google Chrome in the Kali Linux "
-                        "VMware guest."
-                    ),
-
-                "vm_ip":
-                    VM_HOST,
-
-                "vm_name":
-                    "Kali Linux VMware Guest",
-
-                "browser":
-                    "Google Chrome (Linux VM)",
-
-                "ssh":
-                    VM_SSH_TARGET,
-
-                "stdout":
-                    stdout,
-
-                "stderr":
-                    stderr,
-
-                "vmware_focused":
-                    vmware_focused,
+                "message": (
+                    "Website successfully opened inside "
+                    "Google Chrome in the Kali Linux VM."
+                ),
+                "vm_ip": VM_HOST,
+                "vm_name": "Kali Linux VMware Guest",
+                "browser": (
+                    "Google Chrome "
+                    "(Kali Linux VM)"
+                ),
+                "ssh": VM_SSH_TARGET,
+                "chrome_path": chrome_bin,
+                "stdout": stdout,
+                "stderr": stderr,
+                "vmware_focused": vmware_focused,
             }
 
         # ----------------------------------------------------
-        # SSH worked but Chrome status uncertain
+        # Chrome process did not remain alive
         # ----------------------------------------------------
 
-        vmware_focused = (
-            wait_and_bring_vmware_to_front(
-                attempts=12,
-                delay=0.5,
-            )
-        )
+        if "VM_CHROME_PROCESS_EXITED" in stdout:
+
+            return {
+                "success": False,
+                "url": url,
+                "message": (
+                    "Chrome launch command was sent to Kali, "
+                    "but the Chrome process exited immediately. "
+                    "Check the Chrome log below."
+                ),
+                "vm_ip": VM_HOST,
+                "vm_name": "Kali Linux VMware Guest",
+                "browser": (
+                    "Google Chrome "
+                    "(Kali Linux VM)"
+                ),
+                "ssh": VM_SSH_TARGET,
+                "chrome_path": chrome_bin,
+                "stdout": stdout,
+                "stderr": stderr,
+            }
+
+        # ----------------------------------------------------
+        # Unknown result
+        # ----------------------------------------------------
 
         return {
-
-            "success": True,
-
+            "success": False,
             "url": url,
-
-            "message":
-                (
-                    "Chrome launch command was sent to "
-                    "the Kali Linux VM."
-                ),
-
-            "vm_ip":
-                VM_HOST,
-
-            "vm_name":
-                "Kali Linux VMware Guest",
-
-            "browser":
-                "Google Chrome (Linux VM)",
-
-            "ssh":
-                VM_SSH_TARGET,
-
-            "stdout":
-                stdout,
-
-            "stderr":
-                stderr,
-
-            "vmware_focused":
-                vmware_focused,
+            "message": (
+                "SSH command completed, but Chrome "
+                "could not be confirmed as running."
+            ),
+            "vm_ip": VM_HOST,
+            "vm_name": "Kali Linux VMware Guest",
+            "browser": (
+                "Google Chrome "
+                "(Kali Linux VM)"
+            ),
+            "ssh": VM_SSH_TARGET,
+            "chrome_path": chrome_bin,
+            "stdout": stdout,
+            "stderr": stderr,
         }
 
     except subprocess.TimeoutExpired:
 
         return {
-
             "success": False,
-
             "url": url,
-
-            "message":
-                (
-                    "SSH/Chrome launch timed out "
-                    "after 30 seconds."
-                ),
-
-            "vm_ip":
-                VM_HOST,
-
-            "vm_name":
-                "Kali Linux VMware Guest",
-
-            "browser":
-                "Google Chrome",
-
-            "ssh":
-                VM_SSH_TARGET,
+            "message": (
+                "SSH/Chrome launch timed out "
+                "after 35 seconds."
+            ),
+            "vm_ip": VM_HOST,
+            "vm_name": "Kali Linux VMware Guest",
+            "browser": "Google Chrome",
+            "ssh": VM_SSH_TARGET,
         }
 
     except FileNotFoundError:
 
         return {
-
             "success": False,
-
             "url": url,
-
-            "message":
-                (
-                    "Windows OpenSSH Client was not found."
-                ),
-
-            "ssh":
-                VM_SSH_TARGET,
+            "message": (
+                "Windows OpenSSH Client was not found."
+            ),
+            "ssh": VM_SSH_TARGET,
         }
 
     except Exception as exc:
 
         return {
-
             "success": False,
-
             "url": url,
-
-            "message":
-                str(exc),
-
-            "ssh":
-                VM_SSH_TARGET,
+            "message": str(exc),
+            "ssh": VM_SSH_TARGET,
         }
 
 
@@ -1399,3 +1378,231 @@ if __name__ == "__main__":
         print(
             result
         )
+
+
+# ============================================================
+# HEADLESS KALI WEBSITE SCANNER
+# ============================================================
+
+def scan_url_in_vm(
+    url: str,
+    timeout: int = 45
+):
+    """
+    Render a website inside Kali Linux using the Chrome/Chromium
+    headless engine.
+
+    No Windows browser is opened.
+    No visible Chrome window is required.
+
+    The rendered DOM is returned to the Windows application.
+    """
+
+    import json
+    import shlex
+
+    # --------------------------------------------------------
+    # Validate
+    # --------------------------------------------------------
+
+    if not isinstance(url, str):
+        raise ValueError(
+            "URL must be a string."
+        )
+
+    url = url.strip()
+
+    if not url:
+        raise ValueError(
+            "URL is empty."
+        )
+
+    safe_url = shlex.quote(
+        url
+    )
+
+    # --------------------------------------------------------
+    # Check VM
+    # --------------------------------------------------------
+
+    status = get_vm_connection_status()
+
+    if not status.get(
+        "connected",
+        False
+    ):
+
+        return {
+            "available": False,
+            "success": False,
+            "error":
+                status.get(
+                    "message",
+                    "Kali VM is not reachable."
+                ),
+        }
+
+    # --------------------------------------------------------
+    # Remote command
+    # --------------------------------------------------------
+
+    remote_command = f"""
+set -u
+
+URL={safe_url}
+
+TMP_DIR="/tmp/ai_browser_security"
+PROFILE="$TMP_DIR/headless-profile"
+
+mkdir -p "$TMP_DIR"
+rm -rf "$PROFILE"
+mkdir -p "$PROFILE"
+
+CHROME_BIN="$(command -v google-chrome || \
+command -v google-chrome-stable || \
+command -v chromium || \
+command -v chromium-browser || true)"
+
+if [ -z "$CHROME_BIN" ]; then
+    echo "ERROR:CHROME_NOT_FOUND"
+    exit 20
+fi
+
+timeout {int(timeout)}s "$CHROME_BIN" \
+    --headless=new \
+    --disable-gpu \
+    --no-sandbox \
+    --disable-dev-shm-usage \
+    --disable-extensions \
+    --disable-background-networking \
+    --disable-sync \
+    --disable-default-apps \
+    --disable-popup-blocking \
+    --no-first-run \
+    --no-default-browser-check \
+    --user-data-dir="$PROFILE" \
+    --virtual-time-budget=8000 \
+    --dump-dom \
+    "$URL" \
+    2>/tmp/ai_browser_security/chrome_error.txt \
+    > /tmp/ai_browser_security/rendered.html
+
+STATUS=$?
+
+echo "EXIT_CODE:$STATUS"
+
+if [ -f /tmp/ai_browser_security/rendered.html ]; then
+    echo "HTML_BEGIN"
+    cat /tmp/ai_browser_security/rendered.html
+    echo
+    echo "HTML_END"
+fi
+
+if [ -f /tmp/ai_browser_security/chrome_error.txt ]; then
+    echo "ERROR_BEGIN"
+    tail -100 /tmp/ai_browser_security/chrome_error.txt
+    echo
+    echo "ERROR_END"
+fi
+
+rm -rf "$PROFILE"
+"""
+
+    # --------------------------------------------------------
+    # Execute
+    # --------------------------------------------------------
+
+    code, stdout, stderr = run_ssh(
+        remote_command,
+        timeout=timeout + 15
+    )
+
+    if code != 0:
+
+        return {
+            "available": True,
+            "success": False,
+            "error":
+                stderr
+                or stdout
+                or (
+                    "Headless Chrome "
+                    "scan failed."
+                ),
+        }
+
+    # --------------------------------------------------------
+    # Extract HTML
+    # --------------------------------------------------------
+
+    html = ""
+
+    if "HTML_BEGIN" in stdout:
+
+        try:
+
+            html = (
+                stdout
+                .split(
+                    "HTML_BEGIN",
+                    1
+                )[1]
+                .split(
+                    "HTML_END",
+                    1
+                )[0]
+                .strip()
+            )
+
+        except Exception:
+            html = ""
+
+    # --------------------------------------------------------
+    # Extract exit code
+    # --------------------------------------------------------
+
+    exit_code = None
+
+    for line in stdout.splitlines():
+
+        if line.startswith(
+            "EXIT_CODE:"
+        ):
+
+            try:
+
+                exit_code = int(
+                    line.split(
+                        ":",
+                        1
+                    )[1]
+                )
+
+            except Exception:
+                pass
+
+            break
+
+    if not html:
+
+        return {
+            "available": True,
+            "success": False,
+            "exit_code": exit_code,
+            "error":
+                "Chrome completed but "
+                "no rendered HTML was returned.",
+        }
+
+    return {
+        "available": True,
+        "success": True,
+        "exit_code": exit_code,
+        "url": url,
+        "final_url": url,
+        "html": html,
+        "html_size": len(html),
+        "message":
+            "Website rendered successfully "
+            "inside Kali headless Chrome.",
+    }

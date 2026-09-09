@@ -5,3 +5,5 @@ numpy
 pandas
 requests
 beautifulsoup4
+xgboost
+lightgbm
