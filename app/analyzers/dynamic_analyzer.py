@@ -1,25 +1,14 @@
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import re
-
-
-# ============================================================
-# DYNAMIC ANALYZER
-# ============================================================
-#
-# This module performs lightweight HTTP/HTML analysis.
-#
-# It does NOT open the URL in your normal Windows browser.
-#
-# The actual risky-site browser isolation is handled separately
-# by app/vm_launcher.py and opens the URL inside Kali Linux VM.
-#
-# ============================================================
+import json
+import html as html_module
 
 
 try:
     import requests
 except ImportError:
     requests = None
+
 
 try:
     from bs4 import BeautifulSoup
@@ -28,41 +17,130 @@ except ImportError:
 
 
 # ============================================================
-# SUSPICIOUS JAVASCRIPT PATTERNS
+# VM HEADLESS SCANNER
+# ============================================================
+
+try:
+    from app.vm_launcher import scan_url_in_vm
+
+    VM_SCAN_AVAILABLE = True
+
+except Exception:
+    scan_url_in_vm = None
+    VM_SCAN_AVAILABLE = False
+
+
+# ============================================================
+# SUSPICIOUS JAVASCRIPT
 # ============================================================
 
 SUSPICIOUS_JS_PATTERNS = [
-    r"eval\s*\(",
+
+    r"\beval\s*\(",
+
+    r"\batob\s*\(",
+
+    r"\bunescape\s*\(",
+
+    r"String\.fromCharCode",
+
     r"document\.write\s*\(",
+
     r"window\.location",
+
     r"location\.href",
+
     r"location\.replace",
-    r"atob\s*\(",
-    r"fromCharCode\s*\(",
-    r"unescape\s*\(",
-    r"base64",
+
+    r"location\.assign",
+
+    r"document\.cookie",
+
+    r"localStorage",
+
+    r"sessionStorage",
+
+    r"fetch\s*\(",
+
+    r"XMLHttpRequest",
+
+    r"WebSocket",
+
     r"crypto",
-    r"download",
+
+    r"base64",
+
     r"powershell",
+
     r"cmd\.exe",
-    r"shell",
+
 ]
 
 
 # ============================================================
-# SAFE REQUEST
+# SUSPICIOUS PAGE KEYWORDS
 # ============================================================
 
-def fetch_url(url, timeout=8):
-    """
-    Fetch a URL using a normal HTTP request.
+SUSPICIOUS_PAGE_KEYWORDS = [
 
-    This is only for lightweight analysis.
-    It does not launch Chrome.
-    """
+    "verify your account",
+
+    "verify account",
+
+    "confirm your account",
+
+    "login",
+
+    "sign in",
+
+    "password",
+
+    "bank account",
+
+    "credit card",
+
+    "debit card",
+
+    "payment",
+
+    "billing",
+
+    "security verification",
+
+    "account suspended",
+
+    "account locked",
+
+    "urgent action",
+
+    "update payment",
+
+    "wallet",
+
+    "crypto",
+
+    "otp",
+
+    "one time password",
+
+]
+
+
+# ============================================================
+# SAFE HTTP FETCH
+# ============================================================
+
+def fetch_url(
+    url,
+    timeout=10
+):
 
     if requests is None:
-        return None, "requests package is not installed"
+
+        return (
+            None,
+            "requests is not installed."
+        )
 
     try:
 
@@ -71,12 +149,12 @@ def fetch_url(url, timeout=8):
             timeout=timeout,
             allow_redirects=True,
             headers={
-                "User-Agent": (
+                "User-Agent":
                     "Mozilla/5.0 "
                     "(Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 "
-                    "Chrome/120 Safari/537.36"
-                )
+                    "(KHTML, like Gecko) "
+                    "Chrome/131 Safari/537.36"
             },
         )
 
@@ -84,7 +162,28 @@ def fetch_url(url, timeout=8):
 
     except Exception as exc:
 
-        return None, str(exc)
+        return (
+            None,
+            str(exc)
+        )
+
+
+# ============================================================
+# DOMAIN
+# ============================================================
+
+def domain_from_url(url):
+
+    try:
+
+        return (
+            urlparse(url).hostname
+            or ""
+        ).lower()
+
+    except Exception:
+
+        return ""
 
 
 # ============================================================
@@ -93,367 +192,33 @@ def fetch_url(url, timeout=8):
 
 def analyze_redirects(response):
 
-    redirects = []
-
     if response is None:
-        return redirects
+        return []
+
+    redirects = []
 
     try:
 
         for item in response.history:
 
-            redirects.append(
-                {
-                    "status_code": item.status_code,
-                    "url": item.url,
-                    "location": item.headers.get(
+            redirects.append({
+                "status_code":
+                    item.status_code,
+
+                "url":
+                    item.url,
+
+                "location":
+                    item.headers.get(
                         "Location",
-                        "",
+                        ""
                     ),
-                }
-            )
-
-        return redirects
-
-    except Exception:
-        return redirects
-
-
-# ============================================================
-# DOMAIN COMPARISON
-# ============================================================
-
-def domain_from_url(url):
-
-    try:
-        return (
-            urlparse(url).hostname
-            or ""
-        ).lower()
-
-    except Exception:
-        return ""
-
-
-def analyze_redirect_domains(response):
-
-    redirects = analyze_redirects(
-        response
-    )
-
-    domains = []
-
-    for redirect in redirects:
-
-        domain = domain_from_url(
-            redirect.get("url", "")
-        )
-
-        if domain:
-            domains.append(domain)
-
-    if response is not None:
-
-        final_domain = domain_from_url(
-            response.url
-        )
-
-        if final_domain:
-            domains.append(final_domain)
-
-    unique_domains = list(
-        dict.fromkeys(domains)
-    )
-
-    return unique_domains
-
-
-# ============================================================
-# HTTPS DOWNGRADE
-# ============================================================
-
-def detect_https_downgrade(response):
-
-    if response is None:
-        return 0
-
-    try:
-
-        original = response.request.url
-
-        final = response.url
-
-        original_scheme = (
-            urlparse(original)
-            .scheme
-            .lower()
-        )
-
-        final_scheme = (
-            urlparse(final)
-            .scheme
-            .lower()
-        )
-
-        if (
-            original_scheme == "https"
-            and final_scheme == "http"
-        ):
-            return 1
+            })
 
     except Exception:
         pass
 
-    return 0
-
-
-# ============================================================
-# HTML ANALYSIS
-# ============================================================
-
-def analyze_html(html, page_url):
-
-    result = {
-        "iframe_count": 0,
-        "form_count": 0,
-        "password_forms": 0,
-        "javascript_count": 0,
-        "suspicious_javascript": 0,
-        "external_resource_ratio": 0.0,
-        "forms": [],
-        "iframes": [],
-    }
-
-    if not html:
-        return result
-
-    # --------------------------------------------------------
-    # BeautifulSoup
-    # --------------------------------------------------------
-
-    if BeautifulSoup is None:
-        return result
-
-    try:
-
-        soup = BeautifulSoup(
-            html,
-            "html.parser",
-        )
-
-    except Exception:
-        return result
-
-    # ========================================================
-    # IFRAME
-    # ========================================================
-
-    iframes = soup.find_all(
-        "iframe"
-    )
-
-    result["iframe_count"] = len(
-        iframes
-    )
-
-    for iframe in iframes[:50]:
-
-        result["iframes"].append(
-            iframe.get("src", "")
-        )
-
-    # ========================================================
-    # FORMS
-    # ========================================================
-
-    forms = soup.find_all(
-        "form"
-    )
-
-    result["form_count"] = len(
-        forms
-    )
-
-    for form in forms[:50]:
-
-        action = form.get(
-            "action",
-            "",
-        )
-
-        method = form.get(
-            "method",
-            "get",
-        )
-
-        result["forms"].append(
-            {
-                "action": action,
-                "method": method,
-            }
-        )
-
-        password_inputs = form.find_all(
-            "input",
-            {
-                "type": re.compile(
-                    r"^password$",
-                    re.IGNORECASE,
-                )
-            },
-        )
-
-        if password_inputs:
-
-            result["password_forms"] += 1
-
-    # ========================================================
-    # JAVASCRIPT
-    # ========================================================
-
-    scripts = soup.find_all(
-        "script"
-    )
-
-    result["javascript_count"] = len(
-        scripts
-    )
-
-    suspicious_count = 0
-
-    for script in scripts[:200]:
-
-        script_text = script.get_text(
-            " ",
-            strip=True,
-        )
-
-        src = script.get(
-            "src",
-            "",
-        )
-
-        combined = (
-            f"{src} {script_text}"
-        ).lower()
-
-        for pattern in SUSPICIOUS_JS_PATTERNS:
-
-            try:
-
-                if re.search(
-                    pattern,
-                    combined,
-                    re.IGNORECASE,
-                ):
-
-                    suspicious_count += 1
-
-                    break
-
-            except Exception:
-                continue
-
-    result[
-        "suspicious_javascript"
-    ] = suspicious_count
-
-    # ========================================================
-    # EXTERNAL RESOURCES
-    # ========================================================
-
-    page_domain = domain_from_url(
-        page_url
-    )
-
-    resources = []
-
-    # Images
-    for tag in soup.find_all(
-        "img"
-    ):
-
-        src = tag.get(
-            "src",
-            "",
-        )
-
-        if src:
-            resources.append(src)
-
-    # Scripts
-    for tag in soup.find_all(
-        "script"
-    ):
-
-        src = tag.get(
-            "src",
-            "",
-        )
-
-        if src:
-            resources.append(src)
-
-    # Links
-    for tag in soup.find_all(
-        "link"
-    ):
-
-        href = tag.get(
-            "href",
-            "",
-        )
-
-        if href:
-            resources.append(href)
-
-    # Stylesheets
-    for tag in soup.find_all(
-        "source"
-    ):
-
-        src = tag.get(
-            "src",
-            "",
-        )
-
-        if src:
-            resources.append(src)
-
-    if resources:
-
-        external = 0
-
-        for resource in resources:
-
-            try:
-
-                parsed = urlparse(
-                    resource
-                )
-
-                resource_domain = (
-                    parsed.hostname
-                    or ""
-                ).lower()
-
-                if (
-                    resource_domain
-                    and resource_domain != page_domain
-                ):
-
-                    external += 1
-
-            except Exception:
-                continue
-
-        result[
-            "external_resource_ratio"
-        ] = (
-            external / len(resources)
-        )
-
-    return result
+    return redirects
 
 
 # ============================================================
@@ -462,10 +227,8 @@ def analyze_html(html, page_url):
 
 def detect_downloads(response):
 
-    downloads = []
-
     if response is None:
-        return downloads
+        return []
 
     try:
 
@@ -473,16 +236,16 @@ def detect_downloads(response):
             response.headers
             .get(
                 "Content-Type",
-                "",
+                ""
             )
             .lower()
         )
 
-        content_disposition = (
+        disposition = (
             response.headers
             .get(
                 "Content-Disposition",
-                "",
+                ""
             )
             .lower()
         )
@@ -503,127 +266,467 @@ def detect_downloads(response):
             ".pkg",
         )
 
-        url_lower = (
-            response.url.lower()
-        )
+        url_lower = response.url.lower()
 
         extension_match = any(
             url_lower.endswith(ext)
             for ext in download_extensions
         )
 
-        disposition_match = (
+        attachment_match = (
             "attachment"
-            in content_disposition
+            in disposition
         )
 
         binary_match = any(
-            x in content_type
-            for x in [
+            value in content_type
+            for value in (
                 "application/octet-stream",
                 "application/x-msdownload",
                 "application/zip",
                 "application/x-rar",
-            ]
+            )
         )
 
         if (
             extension_match
-            or disposition_match
+            or attachment_match
             or binary_match
         ):
 
-            downloads.append(
-                {
-                    "url": response.url,
-                    "content_type": content_type,
-                }
-            )
+            return [{
+                "url": response.url,
+                "content_type": content_type,
+            }]
 
     except Exception:
         pass
 
-    return downloads
+    return []
 
 
 # ============================================================
-# MAIN DYNAMIC ANALYZER
+# JAVASCRIPT ANALYSIS
 # ============================================================
 
-def analyze_dynamic_url(
-    url,
-    timeout=8,
+def analyze_javascript(
+    soup
+):
+
+    scripts = soup.find_all(
+        "script"
+    )
+
+    suspicious = 0
+
+    external_scripts = 0
+
+    for script in scripts[:500]:
+
+        src = script.get(
+            "src",
+            ""
+        )
+
+        if src:
+            external_scripts += 1
+
+        text = script.get_text(
+            " ",
+            strip=True
+        )
+
+        combined = (
+            src + " " + text
+        ).lower()
+
+        for pattern in SUSPICIOUS_JS_PATTERNS:
+
+            try:
+
+                if re.search(
+                    pattern,
+                    combined,
+                    re.IGNORECASE
+                ):
+
+                    suspicious += 1
+
+                    break
+
+            except Exception:
+                continue
+
+    return {
+        "javascript_count":
+            len(scripts),
+
+        "suspicious_javascript":
+            suspicious,
+
+        "external_scripts":
+            external_scripts,
+    }
+
+
+# ============================================================
+# PAGE CONTENT ANALYSIS
+# ============================================================
+
+def analyze_html(
+    html,
+    page_url
 ):
 
     result = {
-        "success": False,
-        "url": url,
-        "final_url": url,
 
-        "error": "",
+        "html_available": 1,
 
-        "redirects": [],
-        "redirect_count": 0,
+        "title": "",
 
-        "redirect_domains": [],
-        "redirect_domain_change": 0,
+        "text_length": 0,
 
-        "redirect_https_downgrade": 0,
+        "login_keywords": 0,
 
-        "downloads": [],
-        "download_count": 0,
+        "suspicious_keywords": 0,
 
-        "iframes": [],
-        "iframe_count": 0,
-
-        "forms": [],
         "form_count": 0,
 
         "password_forms": 0,
+
+        "iframe_count": 0,
+
+        "external_resource_count": 0,
+
+        "external_resource_ratio": 0.0,
 
         "javascript_count": 0,
 
         "suspicious_javascript": 0,
 
-        "external_resource_ratio": 0.0,
+        "external_scripts": 0,
 
-        "status_code": None,
-        "content_type": "",
+        "hidden_elements": 0,
+
+        "cross_domain_forms": 0,
+
+        "forms": [],
+
+        "iframes": [],
+
     }
 
-    # --------------------------------------------------------
-    # Empty URL
-    # --------------------------------------------------------
+    if not html:
+        return result
 
-    if not url:
+    if BeautifulSoup is None:
+        return result
 
-        result["error"] = (
-            "URL is empty"
+    try:
+
+        soup = BeautifulSoup(
+            html,
+            "html.parser"
         )
+
+    except Exception:
 
         return result
 
     # --------------------------------------------------------
-    # Fetch
+    # TITLE
     # --------------------------------------------------------
+
+    title = soup.title
+
+    if title:
+
+        result["title"] = (
+            title.get_text(
+                " ",
+                strip=True
+            )[:300]
+        )
+
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+
+    text = soup.get_text(
+        " ",
+        strip=True
+    )
+
+    text_lower = text.lower()
+
+    result["text_length"] = len(text)
+
+    # --------------------------------------------------------
+    # KEYWORDS
+    # --------------------------------------------------------
+
+    result["login_keywords"] = sum(
+        1
+        for word in (
+            "login",
+            "sign in",
+            "signin",
+            "log in",
+            "password",
+        )
+        if word in text_lower
+    )
+
+    result["suspicious_keywords"] = sum(
+        1
+        for word in SUSPICIOUS_PAGE_KEYWORDS
+        if word in text_lower
+    )
+
+    # --------------------------------------------------------
+    # FORMS
+    # --------------------------------------------------------
+
+    forms = soup.find_all(
+        "form"
+    )
+
+    result["form_count"] = len(forms)
+
+    page_domain = domain_from_url(
+        page_url
+    )
+
+    for form in forms[:100]:
+
+        action = form.get(
+            "action",
+            ""
+        )
+
+        action_url = urljoin(
+            page_url,
+            action
+        )
+
+        action_domain = domain_from_url(
+            action_url
+        )
+
+        password_inputs = form.find_all(
+            "input",
+            {
+                "type":
+                    re.compile(
+                        r"^password$",
+                        re.IGNORECASE
+                    )
+            }
+        )
+
+        if password_inputs:
+
+            result[
+                "password_forms"
+            ] += 1
+
+        if (
+            action_domain
+            and page_domain
+            and action_domain != page_domain
+        ):
+
+            result[
+                "cross_domain_forms"
+            ] += 1
+
+        result["forms"].append({
+            "action": action,
+            "method":
+                form.get(
+                    "method",
+                    "get"
+                ),
+            "password":
+                bool(password_inputs),
+        })
+
+    # --------------------------------------------------------
+    # IFRAMES
+    # --------------------------------------------------------
+
+    iframes = soup.find_all(
+        "iframe"
+    )
+
+    result["iframe_count"] = (
+        len(iframes)
+    )
+
+    for iframe in iframes[:100]:
+
+        result["iframes"].append(
+            iframe.get(
+                "src",
+                ""
+            )
+        )
+
+    # --------------------------------------------------------
+    # JAVASCRIPT
+    # --------------------------------------------------------
+
+    result.update(
+        analyze_javascript(
+            soup
+        )
+    )
+
+    # --------------------------------------------------------
+    # HIDDEN ELEMENTS
+    # --------------------------------------------------------
+
+    hidden = 0
+
+    for element in soup.find_all(
+        True
+    ):
+
+        style = (
+            element.get(
+                "style",
+                ""
+            )
+            .lower()
+        )
+
+        if (
+            element.has_attr(
+                "hidden"
+            )
+            or "display:none"
+            in style
+            or "visibility:hidden"
+            in style
+        ):
+
+            hidden += 1
+
+    result[
+        "hidden_elements"
+    ] = hidden
+
+    # --------------------------------------------------------
+    # EXTERNAL RESOURCES
+    # --------------------------------------------------------
+
+    resources = []
+
+    for tag in soup.find_all(
+        ["script", "img", "iframe", "link", "source"]
+    ):
+
+        for attr in (
+            "src",
+            "href"
+        ):
+
+            value = tag.get(
+                attr,
+                ""
+            )
+
+            if value:
+                resources.append(
+                    urljoin(
+                        page_url,
+                        value
+                    )
+                )
+
+    external = 0
+
+    for resource in resources:
+
+        resource_domain = (
+            domain_from_url(
+                resource
+            )
+        )
+
+        if (
+            resource_domain
+            and page_domain
+            and resource_domain
+            != page_domain
+        ):
+
+            external += 1
+
+    result[
+        "external_resource_count"
+    ] = external
+
+    if resources:
+
+        result[
+            "external_resource_ratio"
+        ] = (
+            external /
+            len(resources)
+        )
+
+    return result
+
+
+# ============================================================
+# LOCAL HTTP ANALYSIS
+# ============================================================
+
+def analyze_http_url(
+    url,
+    timeout=10
+):
+
+    result = {
+
+        "success": False,
+
+        "url": url,
+
+        "final_url": url,
+
+        "status_code": None,
+
+        "content_type": "",
+
+        "redirect_count": 0,
+
+        "redirect_domain_change": 0,
+
+        "redirect_https_downgrade": 0,
+
+        "download_count": 0,
+
+        "downloads": [],
+
+        "error": "",
+
+    }
 
     response, error = fetch_url(
         url,
-        timeout=timeout,
+        timeout
     )
 
     if response is None:
 
         result["error"] = (
             error
-            or "Unable to fetch URL"
+            or "Unable to fetch URL."
         )
 
         return result
-
-    # --------------------------------------------------------
-    # Basic response information
-    # --------------------------------------------------------
 
     result["success"] = True
 
@@ -639,57 +742,65 @@ def analyze_dynamic_url(
         response.headers
         .get(
             "Content-Type",
-            "",
+            ""
         )
     )
-
-    # --------------------------------------------------------
-    # Redirects
-    # --------------------------------------------------------
 
     redirects = analyze_redirects(
         response
     )
 
-    result["redirects"] = redirects
-
-    result["redirect_count"] = len(
-        redirects
-    )
-
-    # --------------------------------------------------------
-    # Redirect domains
-    # --------------------------------------------------------
-
-    redirect_domains = (
-        analyze_redirect_domains(
-            response
-        )
-    )
-
     result[
-        "redirect_domains"
-    ] = redirect_domains
+        "redirect_count"
+    ] = len(redirects)
 
-    if len(redirect_domains) > 1:
+    domains = []
+
+    for item in redirects:
+
+        domain = domain_from_url(
+            item.get(
+                "url",
+                ""
+            )
+        )
+
+        if domain:
+            domains.append(domain)
+
+    final_domain = domain_from_url(
+        response.url
+    )
+
+    if final_domain:
+        domains.append(final_domain)
+
+    if len(set(domains)) > 1:
 
         result[
             "redirect_domain_change"
         ] = 1
 
-    # --------------------------------------------------------
-    # HTTPS downgrade
-    # --------------------------------------------------------
-
-    result[
-        "redirect_https_downgrade"
-    ] = detect_https_downgrade(
-        response
+    original_scheme = (
+        urlparse(url)
+        .scheme
+        .lower()
     )
 
-    # --------------------------------------------------------
-    # Downloads
-    # --------------------------------------------------------
+    final_scheme = (
+        urlparse(response.url)
+        .scheme
+        .lower()
+    )
+
+    if (
+        original_scheme == "https"
+        and final_scheme == "http"
+    ):
+
+        result[
+            "redirect_https_downgrade"
+        ] = 1
 
     downloads = detect_downloads(
         response
@@ -697,135 +808,124 @@ def analyze_dynamic_url(
 
     result["downloads"] = downloads
 
-    result["download_count"] = len(
-        downloads
-    )
-
-    # --------------------------------------------------------
-    # HTML
-    # --------------------------------------------------------
-
-    content_type = (
-        result["content_type"]
-        .lower()
-    )
+    result[
+        "download_count"
+    ] = len(downloads)
 
     if (
         "text/html"
-        in content_type
+        in result[
+            "content_type"
+        ].lower()
     ):
 
-        try:
-
-            html_result = analyze_html(
+        result.update(
+            analyze_html(
                 response.text,
-                response.url,
+                response.url
             )
-
-            result.update(
-                html_result
-            )
-
-        except Exception as exc:
-
-            result["error"] = (
-                f"HTML analysis error: {exc}"
-            )
+        )
 
     return result
 
 
 # ============================================================
-# COMPATIBILITY ALIAS
+# FINAL DYNAMIC ANALYSIS
 # ============================================================
 
-def analyze_url_dynamic(
+def analyze_dynamic_url(
     url,
-    timeout=8,
+    timeout=12
 ):
-    return analyze_dynamic_url(
+
+    http_result = analyze_http_url(
         url,
-        timeout=timeout,
+        timeout=timeout
     )
 
+    # --------------------------------------------------------
+    # VM RENDERED SCAN
+    # --------------------------------------------------------
 
-# ============================================================
-# TEST
-# ============================================================
+    vm_result = {
 
-if __name__ == "__main__":
+        "available": False,
 
-    test_url = "https://example.com"
+        "success": False,
 
-    print("=" * 70)
-    print("DYNAMIC URL ANALYZER TEST")
-    print("=" * 70)
+        "error": (
+            "Kali VM headless scanner "
+            "not available."
+        ),
 
-    print(
-        f"URL: {test_url}"
+    }
+
+    if VM_SCAN_AVAILABLE:
+
+        try:
+
+            vm_result = scan_url_in_vm(
+                url,
+                timeout=45
+            )
+
+        except Exception as exc:
+
+            vm_result = {
+                "available": True,
+                "success": False,
+                "error": str(exc),
+            }
+
+    # --------------------------------------------------------
+    # Combine
+    # --------------------------------------------------------
+
+    combined = dict(
+        http_result
     )
 
-    result = analyze_dynamic_url(
-        test_url
+    combined[
+        "vm_scan"
+    ] = vm_result
+
+    combined[
+        "inside_scan"
+    ] = bool(
+        vm_result.get(
+            "success",
+            False
+        )
     )
 
-    print()
-
-    print(
-        f"Success: "
-        f"{result['success']}"
+    # Prefer rendered page when available.
+    rendered_html = (
+        vm_result.get(
+            "html",
+            ""
+        )
     )
 
-    print(
-        f"Status: "
-        f"{result['status_code']}"
-    )
+    if rendered_html:
 
-    print(
-        f"Final URL: "
-        f"{result['final_url']}"
-    )
-
-    print(
-        f"Redirects: "
-        f"{result['redirect_count']}"
-    )
-
-    print(
-        f"Downloads: "
-        f"{result['download_count']}"
-    )
-
-    print(
-        f"IFrames: "
-        f"{result['iframe_count']}"
-    )
-
-    print(
-        f"Forms: "
-        f"{result['form_count']}"
-    )
-
-    print(
-        f"Password forms: "
-        f"{result['password_forms']}"
-    )
-
-    print(
-        f"JavaScript: "
-        f"{result['javascript_count']}"
-    )
-
-    print(
-        f"Suspicious JavaScript: "
-        f"{result['suspicious_javascript']}"
-    )
-
-    print()
-
-    if result["error"]:
-        print(
-            f"Error: {result['error']}"
+        rendered_result = (
+            analyze_html(
+                rendered_html,
+                vm_result.get(
+                    "final_url",
+                    url
+                )
+            )
         )
 
-    print("=" * 70)
+        combined[
+            "rendered"
+        ] = rendered_result
+
+    else:
+
+        combined[
+            "rendered"
+        ] = {}
+
+    return combined
