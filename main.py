@@ -2,7 +2,6 @@ from pathlib import Path
 import sys
 import os
 import webbrowser
-import traceback
 
 import joblib
 import streamlit as st
@@ -14,8 +13,8 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if str(PROJECT_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT.parent))
 
 
 # ============================================================
@@ -209,7 +208,9 @@ if (
     and MODEL_FEATURE_COUNT != len(FEATURE_NAMES)
 ):
 
-    st.error("❌ Model/feature mismatch.")
+    st.error(
+        "❌ Model/feature mismatch."
+    )
 
     st.write(
         f"Model expects: {MODEL_FEATURE_COUNT}"
@@ -673,6 +674,19 @@ def calculate_final_risk(
     return clamp(final)
 
 
+# ============================================================
+# RISK LEVEL
+#
+# IMPORTANT:
+#
+# 0  - 24  = SAFE
+# 25 - 49  = SUSPICIOUS
+# 50 - 74  = HIGH RISK
+# 75 - 100 = CRITICAL
+#
+# Every score >= 25 goes to VM.
+# ============================================================
+
 def risk_level(score):
 
     if score >= 75:
@@ -685,25 +699,79 @@ def risk_level(score):
     if score >= 50:
 
         return (
-            "HIGH",
+            "HIGH RISK",
             "🟠",
         )
 
     if score >= 25:
 
         return (
-            "MEDIUM",
+            "SUSPICIOUS",
             "🟡",
         )
 
     return (
-        "LOW",
+        "SAFE",
         "🟢",
     )
 
 
 # ============================================================
-# OPEN WEBSITE IN NORMAL WINDOWS BROWSER
+# SECURITY DECISION
+#
+# THIS IS THE MAIN SECURITY RULE.
+#
+# SAFE:
+#     Normal Windows browser
+#
+# SUSPICIOUS:
+#     Kali VM Chrome
+#
+# HIGH RISK:
+#     Kali VM Chrome
+#
+# CRITICAL:
+#     Kali VM Chrome
+#
+# NEVER FALL BACK TO NORMAL BROWSER
+# WHEN VM IS UNAVAILABLE.
+# ============================================================
+
+def get_browser_decision(score):
+
+    if score < 25:
+
+        return {
+            "level": "SAFE",
+            "browser": "NORMAL_BROWSER",
+            "isolated": False,
+        }
+
+    if score < 50:
+
+        return {
+            "level": "SUSPICIOUS",
+            "browser": "VM_CHROME",
+            "isolated": True,
+        }
+
+    if score < 75:
+
+        return {
+            "level": "HIGH RISK",
+            "browser": "VM_CHROME",
+            "isolated": True,
+        }
+
+    return {
+        "level": "CRITICAL",
+        "browser": "VM_CHROME",
+        "isolated": True,
+    }
+
+
+# ============================================================
+# OPEN SAFE WEBSITE
 # ============================================================
 
 def open_in_normal_browser(url):
@@ -734,19 +802,23 @@ def open_in_normal_browser(url):
 
 
 # ============================================================
-# OPEN WEBSITE IN KALI VM
+# OPEN SUSPICIOUS/HIGH/CRITICAL WEBSITE IN VM
 # ============================================================
 
 def open_in_kali_vm(url):
 
+    # --------------------------------------------------------
+    # VM is only possible from Windows host
+    # --------------------------------------------------------
+
     if not LOCAL_WINDOWS_MODE:
 
         st.error(
-            "❌ Kali VM integration is available only when "
-            "the Streamlit application runs on your Windows machine."
+            "❌ Kali VM integration is available only "
+            "when the Streamlit application runs on Windows."
         )
 
-        return
+        return False
 
     # --------------------------------------------------------
     # Check VM
@@ -769,7 +841,12 @@ def open_in_kali_vm(url):
                 f"❌ Failed to start Kali VM: {exc}"
             )
 
-            return
+            st.error(
+                "🔒 Website remains blocked. "
+                "It will NOT be opened in the normal browser."
+            )
+
+            return False
 
         if not start_result.get(
             "success",
@@ -787,7 +864,12 @@ def open_in_kali_vm(url):
                 )
             )
 
-            return
+            st.error(
+                "🔒 Website remains blocked. "
+                "It will NOT be opened in the normal browser."
+            )
+
+            return False
 
         st.success(
             "✅ Kali Linux VM is ready."
@@ -804,10 +886,15 @@ def open_in_kali_vm(url):
             "inside the Kali Linux VM."
         )
 
-        return
+        st.error(
+            "🔒 Website remains blocked. "
+            "It will NOT be opened in the normal browser."
+        )
+
+        return False
 
     # --------------------------------------------------------
-    # Open URL
+    # Open URL inside VM
     # --------------------------------------------------------
 
     with st.spinner(
@@ -826,12 +913,15 @@ def open_in_kali_vm(url):
                 f"❌ VM launch exception: {exc}"
             )
 
-            return
+            st.error(
+                "🔒 Website remains blocked. "
+                "It will NOT be opened in the normal browser."
+            )
+
+            return False
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # open_url_in_vm returns a dictionary.
-    # Check the actual success field.
+    # Check result
     # --------------------------------------------------------
 
     if isinstance(result, dict):
@@ -855,6 +945,8 @@ def open_in_kali_vm(url):
                     "🖥️ VMware Workstation was brought to the foreground."
                 )
 
+            return True
+
         else:
 
             st.error(
@@ -868,6 +960,13 @@ def open_in_kali_vm(url):
                 )
             )
 
+            st.error(
+                "🔒 Website remains blocked. "
+                "It will NOT be opened in the normal browser."
+            )
+
+            return False
+
     else:
 
         if result:
@@ -876,11 +975,18 @@ def open_in_kali_vm(url):
                 "🛡️ Website opened inside Kali Linux Chrome."
             )
 
-        else:
+            return True
 
-            st.error(
-                "❌ Failed to open website inside Kali Linux Chrome."
-            )
+        st.error(
+            "❌ Failed to open website inside Kali Linux Chrome."
+        )
+
+        st.error(
+            "🔒 Website remains blocked. "
+            "It will NOT be opened in the normal browser."
+        )
+
+        return False
 
 
 # ============================================================
@@ -919,6 +1025,28 @@ with st.sidebar:
 
     st.write(
         f"**Features:** {len(FEATURE_NAMES)}"
+    )
+
+    st.divider()
+
+    st.write(
+        "**Browser Security Policy**"
+    )
+
+    st.write(
+        "🟢 0–24 → Normal Browser"
+    )
+
+    st.write(
+        "🟡 25–49 → VM Chrome"
+    )
+
+    st.write(
+        "🟠 50–74 → VM Chrome"
+    )
+
+    st.write(
+        "🔴 75–100 → VM Chrome"
     )
 
     st.divider()
@@ -1045,7 +1173,7 @@ if analyze:
             st.stop()
 
     # --------------------------------------------------------
-    # HTTP + HTML + KALI HEADLESS
+    # DYNAMIC WEBSITE ANALYSIS
     # --------------------------------------------------------
 
     with st.spinner(
@@ -1098,11 +1226,12 @@ if analyze:
             final_score
         )
 
+        browser_decision = get_browser_decision(
+            final_score
+        )
+
     # --------------------------------------------------------
     # SAVE COMPLETE RESULT
-    #
-    # This is important because Streamlit reruns the script
-    # when an Open button is clicked.
     # --------------------------------------------------------
 
     st.session_state["scan_result"] = {
@@ -1124,6 +1253,8 @@ if analyze:
         "level": level,
 
         "icon": icon,
+
+        "browser_decision": browser_decision,
 
         "url_reasons": url_reasons,
 
@@ -1175,6 +1306,10 @@ if "scan_result" in st.session_state:
 
     icon = result[
         "icon"
+    ]
+
+    browser_decision = result[
+        "browser_decision"
     ]
 
     url_reasons = result[
@@ -1235,6 +1370,61 @@ if "scan_result" in st.session_state:
     )
 
     # ========================================================
+    # SECURITY DECISION
+    # ========================================================
+
+    st.subheader(
+        "🛡️ Security Decision"
+    )
+
+    if final_score < 25:
+
+        st.success(
+            "🟢 SAFE — Normal Windows browser is allowed."
+        )
+
+        st.info(
+            "Security decision: NORMAL WINDOWS BROWSER"
+        )
+
+    elif final_score < 50:
+
+        st.warning(
+            "🟡 SUSPICIOUS — Website will ONLY open "
+            "inside Kali Linux VM Chrome."
+        )
+
+        st.info(
+            "🔒 Security decision: VM CHROME"
+        )
+
+    elif final_score < 75:
+
+        st.warning(
+            "🟠 HIGH RISK — Website will ONLY open "
+            "inside Kali Linux VM Chrome."
+        )
+
+        st.info(
+            "🔒 Security decision: VM CHROME"
+        )
+
+    else:
+
+        st.error(
+            "🔴 CRITICAL — Website will ONLY open "
+            "inside Kali Linux VM Chrome."
+        )
+
+        st.info(
+            "🔒 Security decision: VM CHROME"
+        )
+
+    st.write(
+        f"**Scanned URL:** `{normalized_url}`"
+    )
+
+    # ========================================================
     # OPEN WEBSITE
     # ========================================================
 
@@ -1242,20 +1432,11 @@ if "scan_result" in st.session_state:
         "🌐 Website Opening"
     )
 
-    st.write(
-        f"**Scanned URL:** `{normalized_url}`"
-    )
-
     # --------------------------------------------------------
-    # LOW RISK
+    # SAFE
     # --------------------------------------------------------
 
     if final_score < 25:
-
-        st.success(
-            "🟢 LOW RISK — This website can be opened "
-            "in the normal Windows browser."
-        )
 
         if st.button(
             "🌐 Open in Normal Browser",
@@ -1269,30 +1450,30 @@ if "scan_result" in st.session_state:
             )
 
     # --------------------------------------------------------
-    # MEDIUM / HIGH / CRITICAL
+    # SUSPICIOUS / HIGH / CRITICAL
     # --------------------------------------------------------
 
     else:
 
-        if level == "MEDIUM":
+        if level == "SUSPICIOUS":
 
             st.warning(
-                "🟡 MEDIUM RISK — The website will "
-                "only be opened inside the Kali Linux VM."
+                "🟡 SUSPICIOUS WEBSITE — "
+                "Normal Windows Chrome is blocked."
             )
 
-        elif level == "HIGH":
+        elif level == "HIGH RISK":
 
             st.warning(
-                "🟠 HIGH RISK — Do not open this website "
-                "in the normal Windows browser."
+                "🟠 HIGH RISK WEBSITE — "
+                "Normal Windows Chrome is blocked."
             )
 
         else:
 
             st.error(
-                "🔴 CRITICAL RISK — The website must remain "
-                "isolated inside the Kali Linux VM."
+                "🔴 CRITICAL WEBSITE — "
+                "Normal Windows Chrome is blocked."
             )
 
         if st.button(
@@ -1310,16 +1491,25 @@ if "scan_result" in st.session_state:
     # ISOLATION DECISION
     # ========================================================
 
+    st.subheader(
+        "🔐 Browser Isolation"
+    )
+
     if final_score >= 25:
 
-        st.warning(
-            "🖥️ Isolation decision: KALI LINUX VM"
+        st.error(
+            "🔒 ISOLATED — Kali Linux VM Chrome"
+        )
+
+        st.caption(
+            "Suspicious, High Risk, and Critical websites "
+            "cannot be opened in the normal Windows browser."
         )
 
     else:
 
         st.success(
-            "🟢 Isolation decision: NORMAL WINDOWS BROWSER"
+            "🟢 NOT REQUIRED — Normal Windows Browser"
         )
 
     # ========================================================
